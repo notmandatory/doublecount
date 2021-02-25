@@ -9,14 +9,23 @@ use std::{marker::PhantomData, slice};
 
 #[cfg(feature = "serde-support")]
 use serde::{Deserialize, Serialize};
+use crate::{Account, AccountState};
+use crate::error::AccountingError::AccountExists;
 
 /// A representation of what type of [Action](Action) is being performed.
+///
+/// The actions below are listed in the order they will be sorted by and executed.
+/// Lower priority actions may depend on higher priority actions already having been executed on
+/// the same day.
 #[derive(PartialEq, Eq, Debug, PartialOrd, Ord, Hash, Clone)]
 pub enum ActionType {
+    /// An [Action](Action) to create a new [Account](create::Account).
+    /// Represented by the [CreateAccount](CreateAccount) struct.
+    CreateAccount,
     /// An [Action](Action) to edit the status of an [Account](crate::Account).
     /// Represented by the [EditAccountStatus](EditAccountStatus) struct.
     ///
-    /// This action has the highest priority when being sorted, because
+    /// This action has the second highest priority when being sorted, because
     /// other actions on the same day may depend on this already having
     /// been executed.
     EditAccountStatus,
@@ -24,7 +33,7 @@ pub enum ActionType {
     /// a [Program](super::Program) is being executed. Represented by a
     /// [BalanceAssertion](BalanceAssertion) struct.
     BalanceAssertion,
-    /// A [Action](Action) to perform a transaction between [Account](crate::Account)s.
+    /// An [Action](Action) to perform a transaction between [Account](crate::Account)s.
     /// Represented by the [Transaction](Transaction) struct.
     Transaction,
 }
@@ -32,6 +41,7 @@ pub enum ActionType {
 impl ActionTypeFor<ActionType> for ActionTypeValue {
     fn action_type(&self) -> ActionType {
         match self {
+            ActionTypeValue::CreateAccount(_) => ActionType::CreateAccount,
             ActionTypeValue::EditAccountStatus(_) => ActionType::EditAccountStatus,
             ActionTypeValue::BalanceAssertion(_) => ActionType::BalanceAssertion,
             ActionTypeValue::Transaction(_) => ActionType::Transaction,
@@ -42,7 +52,8 @@ impl ActionTypeFor<ActionType> for ActionTypeValue {
 impl ActionType {
     /// Return an iterator over all available [ActionType](ActionType) variants.
     pub fn iterator() -> slice::Iter<'static, ActionType> {
-        static ACTION_TYPES: [ActionType; 3] = [
+        static ACTION_TYPES: [ActionType; 4] = [
+            ActionType::CreateAccount,
             ActionType::EditAccountStatus,
             ActionType::BalanceAssertion,
             ActionType::Transaction,
@@ -68,6 +79,7 @@ pub trait ActionTypeValueEnum<AT> {
 #[cfg_attr(feature = "serde-support", serde(tag = "type"))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActionTypeValue {
+    CreateAccount(CreateAccount),
     EditAccountStatus(EditAccountStatus),
     BalanceAssertion(BalanceAssertion),
     Transaction(Transaction),
@@ -76,10 +88,17 @@ pub enum ActionTypeValue {
 impl<AT> ActionTypeValueEnum<AT> for ActionTypeValue {
     fn as_action(&self) -> &dyn Action<AT, ActionTypeValue> {
         match self {
+            ActionTypeValue::CreateAccount(action) => action,
             ActionTypeValue::EditAccountStatus(action) => action,
             ActionTypeValue::BalanceAssertion(action) => action,
             ActionTypeValue::Transaction(action) => action,
         }
+    }
+}
+
+impl From<CreateAccount> for ActionTypeValue {
+    fn from(action: CreateAccount) -> Self {
+        ActionTypeValue::CreateAccount(action)
     }
 }
 
@@ -147,9 +166,9 @@ impl<AT, ATV> ActionOrder<AT, ATV> {
 }
 
 impl<AT, ATV> PartialEq for ActionOrder<AT, ATV>
-where
-    AT: PartialEq,
-    ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
+    where
+        AT: PartialEq,
+        ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
 {
     fn eq(&self, other: &ActionOrder<AT, ATV>) -> bool {
         let self_action = self.action_value.as_action();
@@ -160,16 +179,15 @@ where
 }
 
 impl<AT, ATV> Eq for ActionOrder<AT, ATV>
-where
-    ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
-    AT: PartialEq,
-{
-}
+    where
+        ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
+        AT: PartialEq,
+{}
 
 impl<AT, ATV> PartialOrd for ActionOrder<AT, ATV>
-where
-    AT: Ord,
-    ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
+    where
+        AT: Ord,
+        ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let self_action = self.action_value.as_action();
@@ -188,9 +206,9 @@ where
 }
 
 impl<AT, ATV> Ord for ActionOrder<AT, ATV>
-where
-    AT: Ord,
-    ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
+    where
+        AT: Ord,
+        ATV: ActionTypeValueEnum<AT> + ActionTypeFor<AT>,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let self_action = self.action_value.as_action();
@@ -314,8 +332,8 @@ impl fmt::Display for Transaction {
 }
 
 impl<AT, ATV> Action<AT, ATV> for Transaction
-where
-    ATV: ActionTypeValueEnum<AT>,
+    where
+        ATV: ActionTypeValueEnum<AT>,
 {
     fn date(&self) -> NaiveDate {
         self.date
@@ -357,7 +375,7 @@ where
                     None => {
                         return Err(AccountingError::MissingAccountState(
                             empty_element.account_id,
-                        ))
+                        ));
                     }
                 }
             }
@@ -440,7 +458,7 @@ where
                         String::from(
                             "unable to calculate all required amounts for this transaction",
                         ),
-                    ))
+                    ));
                 }
             };
 
@@ -491,6 +509,63 @@ impl TransactionElement {
     }
 }
 
+/// A type of [Action](Action) to create a new [Account](crate::Account).
+///
+#[cfg_attr(feature = "serde-support", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateAccount {
+    account: Account,
+    date: NaiveDate,
+}
+
+impl CreateAccount {
+    /// Create a new [CreateAccount](CreateAccount).
+    pub fn new(
+        account: Account,
+        date: NaiveDate,
+    ) -> CreateAccount {
+        CreateAccount {
+            account,
+            date,
+        }
+    }
+}
+
+impl fmt::Display for CreateAccount {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Create Account")
+    }
+}
+
+impl<AT, ATV> Action<AT, ATV> for CreateAccount
+    where
+        ATV: ActionTypeValueEnum<AT>,
+{
+    fn date(&self) -> NaiveDate {
+        self.date
+    }
+
+    fn perform(&self, program_state: &mut ProgramState<AT, ATV>) -> Result<(), AccountingError> {
+        if program_state.account_states.contains_key(&self.account.id) {
+            return Err(AccountExists(self.account.id));
+        } else {
+            program_state.account_states.insert(self.account.id, AccountState {
+                account: Rc::from(self.account.clone()),
+                amount: Commodity::zero(self.account.commodity_type_id),
+                status: AccountStatus::Closed,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+impl ActionTypeFor<ActionType> for CreateAccount {
+    fn action_type(&self) -> ActionType {
+        ActionType::CreateAccount
+    }
+}
+
 /// A type of [Action](Action) to edit the
 /// [AccountStatus](AccountStatus) of a given [Account](crate::Account)'s
 /// [AccountState](super::AccountState).
@@ -524,8 +599,8 @@ impl fmt::Display for EditAccountStatus {
 }
 
 impl<AT, ATV> Action<AT, ATV> for EditAccountStatus
-where
-    ATV: ActionTypeValueEnum<AT>,
+    where
+        ATV: ActionTypeValueEnum<AT>,
 {
     fn date(&self) -> NaiveDate {
         self.date
@@ -612,8 +687,8 @@ impl fmt::Display for FailedBalanceAssertion {
 // this assertion fails, a [FailedBalanceAssertion](FailedBalanceAssertion)
 // will be recorded in the [ProgramState](ProgramState).
 impl<AT, ATV> Action<AT, ATV> for BalanceAssertion
-where
-    ATV: ActionTypeValueEnum<AT>,
+    where
+        ATV: ActionTypeValueEnum<AT>,
 {
     fn date(&self) -> NaiveDate {
         self.date
@@ -715,7 +790,7 @@ mod tests {
                     Commodity::new(Decimal::new(100, 2), &*aud),
                     None,
                 )
-                .into(),
+                    .into(),
             ),
             // This assertion is expected to fail because it occurs at the start
             // of the day (before the transaction).
@@ -725,7 +800,7 @@ mod tests {
                     date_1.clone(),
                     Commodity::new(Decimal::new(100, 2), &*aud),
                 )
-                .into(),
+                    .into(),
             ),
             // This assertion is expected to pass because it occurs at the end
             // of the day (after the transaction).
@@ -735,7 +810,7 @@ mod tests {
                     date_2.clone(),
                     Commodity::new(Decimal::new(100, 2), &*aud),
                 )
-                .into(),
+                    .into(),
             ),
         ];
 

@@ -29,4 +29,6 @@ pub enum AccountingError {
     MissingAccountState(AccountID),
     #[error("the balance assertion failed {0}")]
     BalanceAssertionFailed(FailedBalanceAssertion),
+    #[error("an account with id {0} already exists")]
+    AccountExists(AccountID),
 }
